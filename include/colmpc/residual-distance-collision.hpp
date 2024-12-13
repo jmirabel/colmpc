@@ -170,10 +170,9 @@ struct ResidualDataDistanceCollisionTpl
   using Base::Rx;
   using Base::shared;
 
-  coal::DistanceRequest
-      req;  //!< Distance Request from coal,
-            //!< used to compute the distance between shapes
-  coal::DistanceResult res;  //!< Distance Result from coal
+  coal::DistanceRequest req;  //!< Distance Request from coal,
+                              //!< used to compute the distance between shapes
+  coal::DistanceResult res;   //!< Distance Result from coal
 
   Matrix6xs J1;
   Matrix6xs J2;
