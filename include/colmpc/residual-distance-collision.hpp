@@ -137,13 +137,14 @@ struct ResidualDataDistanceCollisionTpl
   typedef typename MathBase::Vector3s Vector3s;
 
   template <template <typename Scalar> class Model>
-  static coal::ComputeDistance buildComputeDistance(Model<Scalar> *const model) {
-    const pinocchio::GeometryModel& geom_model = model->get_geometry();
+  static coal::ComputeDistance buildComputeDistance(
+      Model<Scalar> *const model) {
+    const pinocchio::GeometryModel &geom_model = model->get_geometry();
     const pinocchio::PairIndex pair_id = model->get_pair_id();
 
-    const auto& cp = geom_model.collisionPairs[pair_id];
-    const auto& geom_1 = geom_model.geometryObjects[cp.first].geometry;
-    const auto& geom_2 = geom_model.geometryObjects[cp.second].geometry;
+    const auto &cp = geom_model.collisionPairs[pair_id];
+    const auto &geom_1 = geom_model.geometryObjects[cp.first].geometry;
+    const auto &geom_2 = geom_model.geometryObjects[cp.second].geometry;
 
     return hpp::fcl::ComputeDistance(geom_1.get(), geom_2.get());
   }
@@ -182,8 +183,8 @@ struct ResidualDataDistanceCollisionTpl
   using Base::shared;
 
   hpp::fcl::ComputeDistance
-      distance; //!< Compute Distance from hppfcl,
-                //!< used to compute the distance between shapes
+      distance;  //!< Compute Distance from hppfcl,
+                 //!< used to compute the distance between shapes
 
   hpp::fcl::DistanceRequest
       req;  //!< Distance Request from hppfcl,

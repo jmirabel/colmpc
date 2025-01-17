@@ -62,9 +62,7 @@ void ResidualDistanceCollisionTpl<Scalar>::calc(
   }
 
   d->r[0] = d->distance(toFclTransform3f(d->oMg_id_1),
-                        toFclTransform3f(d->oMg_id_2),
-                        d->req,
-                        d->res);
+                        toFclTransform3f(d->oMg_id_2), d->req, d->res);
 }
 
 template <typename Scalar>
