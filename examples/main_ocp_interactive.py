@@ -9,48 +9,14 @@ import os
 
 import create_ocp
 import pinocchio as pin
-from param_parsers import ParamParser
+import simulation
+import mim_solvers
+from param_parsers import ParamParser, argument_parser
 from visualizer import create_viewer
 from wrapper_panda import PandaWrapper
 
-
-### Argument parser
-def scene_type(value):
-    ivalue = int(value)
-    if ivalue < 1 or ivalue > 3:
-        raise argparse.ArgumentTypeError(
-            f"Scene must be an integer between 1 and 3. You provided {ivalue}."
-        )
-    return ivalue
-
-
-# Create the parser
-parser = argparse.ArgumentParser(description="Process scene argument.")
-
-# Add argument for scene
-parser.add_argument(
-    "--scene",
-    "-s",
-    type=scene_type,
-    required=True,
-    help="Scene number (must be 1, 2, or 3).",
-)
-
-parser.add_argument(
-    "--distance-in-cost",
-    "-d",
-    action="store_true",
-    help="Add the distance residual to the cost.",
-)
-
-parser.add_argument(
-    "--velocity",
-    "-v",
-    action="store_true",
-    help="Use velocity-based constraints.",
-)
-
 # Parse the arguments
+parser = argument_parser()
 args = parser.parse_args()
 
 
@@ -83,8 +49,16 @@ else:
     ocp, objects = create_ocp.create_ocp_distance(
         rmodel, cmodel, args.distance_in_cost, pp
     )
+ocp.problem.nthreads = args.nthreads
+if args.verbose:
+    ocp.setCallbacks([
+        mim_solvers.CallbackLogger(),
+        mim_solvers.CallbackVerbose(),
+    ])
 
-import simulation
+# ocp.use_filter_line_search = True
+ocp.mu_dynamic = -1
+ocp.mu_constraint = -1
 
 simulation.simulation_loop(
     ocp,

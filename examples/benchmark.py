@@ -4,55 +4,19 @@
 # Copyright note valid unless otherwise stated in individual files.
 # All rights reserved.
 
-import argparse
 import os
 import time
 
 import create_ocp
 import crocoddyl
+import mim_solvers
 import pinocchio as pin
-from param_parsers import ParamParser
+from param_parsers import ParamParser, argument_parser
 from wrapper_panda import PandaWrapper
 
 
-### Argument parser
-def scene_type(value):
-    ivalue = int(value)
-    if ivalue < 1 or ivalue > 3:
-        raise argparse.ArgumentTypeError(
-            f"Scene must be an integer between 1 and 3. You provided {ivalue}."
-        )
-    return ivalue
-
-
-# Create the parser
-parser = argparse.ArgumentParser(description="Process scene argument.")
-
-# Add argument for scene
-parser.add_argument(
-    "--scene",
-    "-s",
-    type=scene_type,
-    required=True,
-    help="Scene number (must be 1, 2, or 3).",
-)
-
-parser.add_argument(
-    "--distance-in-cost",
-    "-d",
-    action="store_true",
-    help="Add the distance residual to the cost.",
-)
-
-# Add argument for scene
-parser.add_argument(
-    "--velocity",
-    "-v",
-    action="store_true",
-    help="Use velocity-based constraints.",
-)
-
 # Parse the arguments
+parser = argument_parser()
 args = parser.parse_args()
 
 
@@ -81,32 +45,40 @@ else:
         rmodel, cmodel, args.distance_in_cost, pp
     )
 
+ocp.problem.nthreads = args.nthreads
+
 frame_placement_residual = objects["framePlacementResidual"]
 ref = frame_placement_residual.reference
 
-# import mim_solvers
-# ocp.setCallbacks([
-#     mim_solvers.CallbackLogger(),
-#     mim_solvers.CallbackVerbose(),
-# ])
+if args.verbose:
+    ocp.setCallbacks([
+        mim_solvers.CallbackLogger(),
+        mim_solvers.CallbackVerbose(),
+    ])
+# ocp.use_filter_line_search = True
+ocp.mu_dynamic = -1
+ocp.mu_constraint = -1
 
 XS_init = [pp.get_X0()] * (pp.get_T() + 1)
 US_init = ocp.problem.quasiStatic(XS_init[:-1])
 
-xs = XS_init.copy()
-us = US_init.copy()
-
-# crocoddyl.enable_profiler()
+ocp.xs = XS_init.copy()
+ocp.us = US_init.copy()
 
 for n in range(10):
     start = time.time()
-    ocp.solve(xs, us, 50)
+    ok = ocp.solve(ocp.xs, ocp.us, 1000)
     stop = time.time()
-    print(f"{n:4}  {(stop - start)*1e3:6.2f}  {ocp.iter:3}")
-    xs = ocp.xs
-    us = ocp.us
+    print(f"{n:4}  {1 if ok else 0}  {(stop - start)*1e3:6.2f}  {ocp.iter:3}")
+
+    create_ocp.shift_result(ocp, pp.get_dt())
 
     ref.translation[0] += 0.01
     frame_placement_residual.reference = ref
+    if n == 0:
+        # ocp.use_filter_line_search = True
+        if args.enable_profiler:
+            crocoddyl.enable_profiler()
 
-crocoddyl.stop_watch_report(2)
+if args.enable_profiler:
+    crocoddyl.stop_watch_report(2)

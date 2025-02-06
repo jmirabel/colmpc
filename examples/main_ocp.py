@@ -45,6 +45,14 @@ parser.add_argument(
     help="Add the distance residual to the cost.",
 )
 
+parser.add_argument(
+    "--nthreads",
+    "-n",
+    type=int,
+    default=1,
+    help="Set the number of threads.",
+)
+
 # Parse the arguments
 args = parser.parse_args()
 
@@ -69,18 +77,20 @@ add_sphere_to_viewer(
 
 # OCP with distance constraints
 OCP_dist, _ = create_ocp.create_ocp_distance(rmodel, cmodel, args.distance_in_cost, pp)
+OCP_dist.problem.nthreads = args.nthreads
 XS_init = [pp.get_X0()] * (pp.get_T() + 1)
 US_init = OCP_dist.problem.quasiStatic(XS_init[:-1])
 
-OCP_dist.solve(XS_init, US_init, 100)
-print("OCP with distance constraints solved")
+ok = OCP_dist.solve(XS_init, US_init, 100)
+print("OCP with distance constraints solved", ok)
 
 # OCP with velocity constraints
 ocp_vel, _ = create_ocp.create_ocp_velocity(rmodel, cmodel, pp)
-ocp_vel.solve(XS_init, US_init, 100)
+ocp_vel.problem.nthreads = args.nthreads
+ok = ocp_vel.solve(XS_init, US_init, 100)
 
 
-print("OCP with velocity constraints solved")
+print("OCP with velocity constraints solved", ok)
 for i, xs in enumerate(ocp_vel.xs):
     q = np.array(xs[:7].tolist())
     pin.framesForwardKinematics(rmodel, rdata, q)

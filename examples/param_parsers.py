@@ -4,9 +4,11 @@
 # Copyright note valid unless otherwise stated in individual files.
 # All rights reserved.
 
+import argparse
 import hppfcl
 import numpy as np
 import numpy.typing as npt
+import typing as T
 import pinocchio as pin
 import yaml
 
@@ -159,6 +161,22 @@ class ParamParser:
 
     def get_dt(self) -> float:
         return float(self.data["dt"])
+    
+    def get_dts(self) -> T.List[float]:
+        T = self.get_T()
+        dt = self.get_dt()
+        if "dt_factors" in self.data:
+            dt_factors = self.data["dt_factors"]
+            assert len(dt_factors) == T
+            return [ dt * f for f in dt_factors ]
+        elif "dt_n_seq" in self.data:
+            dt_n_seq = self.data["dt_n_seq"]
+            dts = sum(([sdt,] * sn  for sdt, sn in dt_n_seq), [])
+            assert len(dts) == T
+            assert all(t0 <= t1 for t0, t1 in zip(dts[:-1], dts[1:]))
+            assert dts[0] == dt
+            return dts
+        return [ dt ] * T
 
     def get_di(self) -> float:
         return float(self.data["di"])
@@ -184,6 +202,65 @@ class ParamParser:
     def get_W_obstacle(self) -> float:
         return float(self.data["WEIGHT_OBSTACLE"])
 
+
+def argument_parser() -> argparse.ArgumentParser:
+    ### Argument parser
+    def scene_type(value):
+        ivalue = int(value)
+        if ivalue < 1 or ivalue > 3:
+            raise argparse.ArgumentTypeError(
+                f"Scene must be an integer between 1 and 3. You provided {ivalue}."
+            )
+        return ivalue
+
+    # Create the parser
+    parser = argparse.ArgumentParser(description="Process scene argument.")
+
+    # Add argument for scene
+    parser.add_argument(
+        "--scene",
+        "-s",
+        type=scene_type,
+        required=True,
+        help="Scene number (must be 1, 2, or 3).",
+    )
+
+    parser.add_argument(
+        "--distance-in-cost",
+        "-d",
+        action="store_true",
+        help="Add the distance residual to the cost.",
+    )
+
+    parser.add_argument(
+        "--verbose",
+        "-V",
+        action="store_true",
+        help="Enable verbosity.",
+    )
+
+    parser.add_argument(
+        "--enable-profiler",
+        "-p",
+        action="store_true",
+        help="Enable Crocoddyl profiler.",
+    )
+
+    parser.add_argument(
+        "--nthreads",
+        "-n",
+        type=int,
+        default=1,
+        help="Set the number of threads.",
+    )
+
+    parser.add_argument(
+        "--velocity",
+        "-v",
+        action="store_true",
+        help="Use velocity-based constraints.",
+    )
+    return parser
 
 if __name__ == "__main__":
     from wrapper_panda import PandaWrapper

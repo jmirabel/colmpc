@@ -1,14 +1,26 @@
+import itertools
 import threading
 import time
 import tkinter as tk
 from tkinter import ttk
+import typing as T
 
 import crocoddyl
 import numpy as np
 import pinocchio
 from param_parsers import ParamParser
 from visualizer import add_sphere_to_viewer
-
+from create_ocp import shift_result
+class bcolors:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
 
 class GUI:
     def __init__(
@@ -25,6 +37,7 @@ class GUI:
         self.moving_geom = moving_geom
         self.frame_placement_residual = frame_placement_residual
         self.stop_requested = False
+        self.pause = False
 
         self.mutex = threading.Lock()
 
@@ -152,8 +165,13 @@ class GUI:
             frame_ref, text="Update Reference", command=self.update_reference
         ).grid(row=6, column=1, padx=10, pady=10)
 
-        ttk.Button(root, text="Stop", command=self.stop_request).grid(
-            row=2, column=0, padx=10, pady=10
+        frame_btn = ttk.LabelFrame(root, text="Simulation")
+        frame_btn.grid(row=2, column=0, padx=10, pady=10)
+        ttk.Button(frame_btn, text="Play/Pause", command=self.toggle_pause_request).grid(
+            row=0, column=0, padx=10, pady=10
+        )
+        ttk.Button(frame_btn, text="Stop", command=self.stop_request).grid(
+            row=0, column=1, padx=10, pady=10
         )
         root.wm_attributes("-topmost", True)
 
@@ -168,6 +186,10 @@ class GUI:
 
     def stop_request(self):
         self.stop_requested = True
+        self.pause = False
+
+    def toggle_pause_request(self):
+        self.pause = not self.pause
 
     def stop(self):
         self.root.quit()
@@ -176,6 +198,105 @@ class GUI:
     def is_running(self):
         return self.gui_thread.is_alive()
 
+
+class Simulation:
+    def __init__(self, rmodel: crocoddyl.ActionModelAbstract, dt: float, x0: np.ndarray, nsteps: int = 1):
+        self._rmodel = rmodel.copy()
+        self._rdata = rmodel.createData()
+        self._dt = dt
+        self._dts = [ dt / nsteps ] * nsteps
+
+        self._x = x0
+
+        self._low_level_controller = self._default_controller
+
+    def _default_controller(self, x, xdes, u, dt):
+        return u
+
+    def set_low_level_controller(self, func: T.Callable[[np.ndarray, np.ndarray, T.Optional[np.ndarray]], np.ndarray]):
+        """The low level controller is a function that takes as parameters:
+        - current state (q,v)
+        - desired torque
+        - time step
+        - expected current state
+        """
+        self._low_level_controller = func
+
+    def integrate_torque(self, u: np.ndarray, xs_expected: T.Optional[T.List[np.ndarray]] = None):
+        # for dt in self._dts:
+        #     # Calculate acceleration
+        #     a = pinocchio.aba(self._rmodel, self._rdata, self._q, self._v, u)
+        #     # integrate acceleration
+        #     self._a = a
+        #     self._v += a * dt
+        #     dq = self._v * dt
+        #     self._q = pinocchio.integrate(self._rmodel, self._q, dq)
+        if xs_expected is None:
+            xs_expected = [ None ] * (len(self._dts)+1)
+        assert len(xs_expected) == len(self._dts)+1
+        for dt, xdes in zip(self._dts, xs_expected):
+            self._rmodel.dt = dt
+            u_corrected = self._low_level_controller(self._x, xdes, u, dt)
+            self._rmodel.calc(self._rdata, self._x, u_corrected)
+            self._x = self._rdata.xnext
+
+    def _interpolate(self, rmodel, rdata, x0, u):
+        assert rmodel.dt == self._dt
+        odt = rmodel.dt
+        xs = [ x0.copy() ]
+        # TODO: Use cumulative sum instead of the two loops below...
+        for dt in self._dts:
+            rmodel.dt = dt
+            rmodel.calc(rdata, xs[-1], u)
+            xs.append(rdata.xnext.copy())
+        rmodel.dt = odt
+        rmodel.calc(rdata, x0, u)
+        dx = rdata.xnext - xs[-1]
+        for i, t in enumerate(itertools.accumulate(self._dts)):
+            xs[i+1] += dx * t / self._dt
+        xs[-1] = rdata.xnext
+        return xs
+
+    def loop(self, ocp, xs, us, niters, iter_callback: T.Callable[[int], T.Any] = None):
+        self._x = ocp.problem.x0
+        states = [ self._x.copy() ]
+        ocp_states = []
+        ocp_controls = []
+        for i in range(niters):
+            ok = ocp.solve(xs, us, 100)
+            ocp_states.append(ocp.xs.copy())
+            ocp_controls.append(ocp.us.copy())
+            # print(ok, ocp.iter)
+            xs_expected = self._interpolate(ocp.problem.runningModels[0], ocp.problem.runningDatas[0], ocp.xs[0], ocp.us[0])
+            self.integrate_torque(ocp.us[0], xs_expected)
+            shift_result(ocp, self._dt)
+            xs = ocp.xs.copy()
+            us = ocp.us.copy()
+            ocp.problem.x0 = self.x
+            states.append(self.x.copy())
+            if iter_callback is not None:
+                iter_callback(i)
+        return {
+            "states": states,
+            "ocp_states": ocp_states,
+            "ocp_controls": ocp_controls,
+        }
+
+    @property
+    def q(self) -> np.ndarray:
+        return self._x[:self._rmodel.state.nq]
+
+    @property
+    def v(self) -> np.ndarray:
+        return self._x[self._rmodel.state.nq:]
+    
+    @property
+    def a(self) -> np.ndarray:
+        return self._rdata.differential.xout
+
+    @property
+    def x(self) -> np.ndarray:
+        return self._x
 
 def simulation_loop(
     ocp: crocoddyl.SolverAbstract,
@@ -192,9 +313,12 @@ def simulation_loop(
 
     gui = GUI(rmodel, ref_frame_id, cmodel, moving_geom, frame_placement_residual)
     gui.start()
+    gui.toggle_pause_request()
+
+    simulation = Simulation(ocp.problem.runningModels[0], pp.get_dt(), pp.get_X0(), 100)
+    np.set_printoptions(linewidth=200)
 
     try:
-        start = time.time()
         dt = pp.get_dt()
 
         xs = [pp.get_X0()] * (pp.get_T() + 1)
@@ -207,42 +331,36 @@ def simulation_loop(
         us = ocp.us.copy()
 
         i = 0
-        input()
         while not gui.stop_requested:
+            while gui.pause:
+                time.sleep(dt)
             i = i + 1
             t0 = time.time()
             with gui.mutex:
                 ok = ocp.solve(xs, us, 100)
             t1 = time.time()
-            print(i, t1 - t0)
             xs = ocp.xs.copy()
             us = ocp.us.copy()
-            q = xs[1][:7]
-            if not ok:
-                print("Failed to solve the problem")
-            # print("u: ", np.array2string(np.array(us), precision=2, separator=", ", suppress_small=True))
-            # print("q: ", np.array2string(np.array(xs)[:,:7], precision=2, separator=", ", suppress_small=True))
-            # print("q1: ", np.array2string(xs[1][:7], precision=2, separator=", ", suppress_small=True))
-            # print("diff: ", np.array2string(xs[1][:7] - xs[0][:7], precision=2, separator=", ", suppress_small=True))
-            # for q0, q1 in zip(xs[:-1], xs[1:]):
-            #     print("diff: ", np.array2string(q1[:7] - q0[:7], precision=2, separator=", ", suppress_small=True))
-
+            
+            simulation.integrate_torque(us[0])
+            if i % 10 == 0:
+                print("    i ok iter  time")
+            cbegin = ""
+            cend = ""
+            if not ok or (t1-t0) >= dt:
+                cbegin = bcolors.FAIL
+                cend = bcolors.ENDC
+            print(f"{cbegin}{i:5}  {ok:1}  {ocp.iter:3}  {(t1-t0)*1e3:4.2f}{cend}")
+            
             # Shift the trajectory
-            xs[:-1] = xs[1:]
-            us[:-1] = us[1:]
-            xs[-1] = xs[-2]
-            us[-1] = np.zeros_like(us[-1])
-            ocp.problem.x0 = xs[0]
+            shift_result(ocp, dt)
+            ocp.problem.x0 = simulation.x
 
             # Update the visualizer
-            sleep_time = dt - (time.time() - t0)
-            if sleep_time < 0:
-                print("Warning: the loop is running slower than real time")
-            time.sleep(max(0, sleep_time))
-            vis.display(q)
+            vis.display(simulation.q)
 
             for k, x in enumerate(ocp.xs):
-                qq = np.array(x[:7].tolist())
+                qq = x[:rmodel.nq]
                 pinocchio.forwardKinematics(rmodel, rdata, qq)
                 pinocchio.updateFramePlacement(rmodel, rdata, vis_id)
                 add_sphere_to_viewer(
@@ -252,5 +370,8 @@ def simulation_loop(
                     rdata.oMf[vis_id].translation,
                     color=100000,
                 )
+
+            sleep_time = dt - (t1 - t0)
+            time.sleep(max(0, sleep_time))
     finally:
         gui.stop()

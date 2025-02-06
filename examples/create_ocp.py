@@ -12,6 +12,29 @@ from param_parsers import ParamParser
 
 import colmpc as col
 
+def shift_result(ocp, dt):
+    p = ocp.problem
+    for i, (m, d) in enumerate(zip(p.runningModels, p.runningDatas)):
+        if m.dt == dt:
+            ocp.xs[i] = ocp.xs[i+1]
+            # for the last running model, i+1 is the terminal model.
+            # There is no control for this one. The result of the current loop is
+            # that if two last control will be equal.
+            if i < len(p.runningModels) - 1:
+                ocp.us[i] = ocp.us[i+1]
+        else:
+            assert m.dt > dt
+            mdt = m.dt
+            m.dt = dt
+            m.calc(d, ocp.xs[i], ocp.us[i])
+            m.dt = mdt
+            ocp.xs[i] = d.xnext
+            # Keep the same control because we are still in the segment where
+            # ocp.us[i] was to be applied.
+            # TODO any better guess ? e.g.
+            # - weighted average of ocp.us[i] and ocp.us[i+1] based on the time
+            # - calculate ocp.us[i] so that ocp.xs[i+1] = f(ocp.xs[i], ocp.us[i])
+            #ocp.us[i] = ocp.us[i]
 
 def create_ocp_velocity(
     rmodel: pin.Model, gmodel: pin.GeometryModel, param_parser: ParamParser
@@ -232,16 +255,17 @@ def create_ocp_distance(
         terminalConstraintModelManager,
     )
 
-    runningModel = crocoddyl.IntegratedActionModelEuler(
-        running_DAM, param_parser.get_dt()
-    )
+    runningModels = [ crocoddyl.IntegratedActionModelEuler(
+        running_DAM, dt
+    ) for dt in param_parser.get_dts() ]
     terminalModel = crocoddyl.IntegratedActionModelEuler(terminal_DAM, 0.0)
 
-    runningModel.differential.armature = np.full(7, 0.1)
+    for m in runningModels:
+        m.differential.armature = np.full(7, 0.1)
     terminalModel.differential.armature = np.full(7, 0.1)
 
     problem = crocoddyl.ShootingProblem(
-        param_parser.get_X0(), [runningModel] * param_parser.get_T(), terminalModel
+        param_parser.get_X0(), runningModels, terminalModel
     )
     # Create solver + callbacks
     # Define mim solver with inequalities constraints
@@ -270,10 +294,6 @@ def create_ocp_nocol(
     state = crocoddyl.StateMultibody(rmodel)
     actuation = crocoddyl.ActuationModelFull(state)
 
-    # Running & terminal cost models
-    runningCostModel = crocoddyl.CostModelSum(state)
-    terminalCostModel = crocoddyl.CostModelSum(state)
-
     ### Creation of cost terms
 
     # State Regularization cost
@@ -294,39 +314,44 @@ def create_ocp_nocol(
 
     goalTrackingCost = crocoddyl.CostModelResidual(state, framePlacementResidual)
 
-    # Adding costs to the models
-    runningCostModel.addCost("stateReg", xRegCost, param_parser.get_W_xREG())
-    runningCostModel.addCost("ctrlRegGrav", uRegCost, param_parser.get_W_uREG())
-    runningCostModel.addCost(
-        "gripperPoseRM", goalTrackingCost, param_parser.get_W_gripper_pose()
-    )
+    # Running & terminal cost models
+    runningModels = []
+    for dt in param_parser.get_dts():
+        runningCostModel = crocoddyl.CostModelSum(state)
+        runningCostModel.addCost("stateReg", xRegCost, param_parser.get_W_xREG())
+        runningCostModel.addCost("ctrlRegGrav", uRegCost, param_parser.get_W_uREG())
+        runningCostModel.addCost(
+            "gripperPose", goalTrackingCost, param_parser.get_W_gripper_pose()
+        )
+        # Create Differential Action Model (DAM), i.e. continuous dynamics and cost functions
+        running_DAM = crocoddyl.DifferentialActionModelFreeFwdDynamics(
+            state,
+            actuation,
+            runningCostModel,
+        )
+        runningModel = crocoddyl.IntegratedActionModelEuler(running_DAM, dt)
+        runningModel.differential.armature = np.full(7, 0.1)
+        runningModels.append(runningModel)
+
+    terminalCostModel = crocoddyl.CostModelSum(state)
     terminalCostModel.addCost("stateReg", xRegCost, param_parser.get_W_xREG())
     terminalCostModel.addCost(
         "gripperPose", goalTrackingCost, param_parser.get_W_gripper_pose_term()
     )
 
     # Create Differential Action Model (DAM), i.e. continuous dynamics and cost functions
-    running_DAM = crocoddyl.DifferentialActionModelFreeFwdDynamics(
-        state,
-        actuation,
-        runningCostModel,
-    )
     terminal_DAM = crocoddyl.DifferentialActionModelFreeFwdDynamics(
         state,
         actuation,
         terminalCostModel,
     )
 
-    runningModel = crocoddyl.IntegratedActionModelEuler(
-        running_DAM, param_parser.get_dt()
-    )
     terminalModel = crocoddyl.IntegratedActionModelEuler(terminal_DAM, 0.0)
 
-    runningModel.differential.armature = np.full(7, 0.1)
     terminalModel.differential.armature = np.full(7, 0.1)
 
     problem = crocoddyl.ShootingProblem(
-        param_parser.get_X0(), [runningModel] * param_parser.get_T(), terminalModel
+        param_parser.get_X0(), runningModels, terminalModel
     )
     # Create solver + callbacks
     # Define mim solver with inequalities constraints
